@@ -220,6 +220,42 @@
             border-radius: 4px;
             font-size: 0.9rem;
         }
+        
+        .source-analysis {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            border-left: 4px solid #1e90ff;
+        }
+        
+        .source-analysis h3 {
+            margin-bottom: 0.8rem;
+            color: #1e90ff;
+        }
+        
+        .ip-elements, .suspicious-scripts {
+            margin: 0.5rem 0;
+            list-style-type: none;
+        }
+        
+        .ip-elements li, .suspicious-scripts li {
+            margin: 0.5rem 0;
+            padding: 0.5rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        
+        pre {
+            white-space: pre-wrap;
+            word-break: break-all;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 0.3rem;
+            border-radius: 4px;
+            font-family: monospace;
+            margin-top: 0.2rem;
+        }
     </style>
 </head>
 <body>
@@ -352,6 +388,161 @@
             });
         }
         
+        // Function to fetch and analyze URL content
+        async function analyzeURLContent(url) {
+            try {
+                // Validate URL format first
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                    return {
+                        status: 'error',
+                        error: 'URL must start with http:// or https://'
+                    };
+                }
+                
+                // Attempt to fetch the URL content
+                const response = await fetch(`${API_ENDPOINT}/proxy`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `url=${encodeURIComponent(url)}`
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // If the backend provides the source code
+                const sourceCode = data.source_code || '';
+                
+                // Check for IP-related content within the source code
+                const ipRelatedFindings = findIPRelatedContent(sourceCode);
+                
+                return {
+                    status: 'success',
+                    source_analysis: {
+                        has_ip_tracking: ipRelatedFindings.hasIPTracking,
+                        ip_related_elements: ipRelatedFindings.elements,
+                        suspicious_scripts: ipRelatedFindings.suspiciousScripts
+                    },
+                    source_code: sourceCode
+                };
+            } catch (error) {
+                console.error('Error analyzing URL content:', error);
+                return {
+                    status: 'error',
+                    error: 'Failed to fetch or analyze URL content'
+                };
+            }
+        }
+
+        // Function to search for IP-related content in source code
+        function findIPRelatedContent(sourceCode) {
+            // Initialize results
+            const results = {
+                hasIPTracking: false,
+                elements: [],
+                suspiciousScripts: []
+            };
+            
+            if (!sourceCode) return results;
+            
+            // IP-related keywords to search for
+            const ipKeywords = [
+                'ip', 'getIP', 'ipAddress', 'ipify', 'whatismyip', 'grabIP', 
+                'trackIP', 'clientIP', 'userIP', 'visitorIP', 'myip', 'iplogger'
+            ];
+            
+            // Check for IP-related keywords in the source
+            ipKeywords.forEach(keyword => {
+                // Case insensitive search for the keyword
+                const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+                if (regex.test(sourceCode)) {
+                    results.hasIPTracking = true;
+                    
+                    // Find the context around matches
+                    let match;
+                    const contextRegex = new RegExp(`.{0,50}\\b${keyword}\\b.{0,50}`, 'gi');
+                    while ((match = contextRegex.exec(sourceCode)) !== null) {
+                        results.elements.push({
+                            keyword: keyword,
+                            context: match[0].trim()
+                        });
+                    }
+                }
+            });
+            
+            // Look for suspicious script tags and API calls
+            const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+            let scriptMatch;
+            
+            while ((scriptMatch = scriptRegex.exec(sourceCode)) !== null) {
+                const scriptContent = scriptMatch[1];
+                
+                // Check if script contains IP-related functionality
+                if (ipKeywords.some(keyword => new RegExp(`\\b${keyword}\\b`, 'i').test(scriptContent))) {
+                    results.suspiciousScripts.push({
+                        position: scriptMatch.index,
+                        excerpt: scriptContent.length > 100 ? 
+                            scriptContent.substring(0, 100) + '...' : 
+                            scriptContent
+                    });
+                }
+                
+                // Check for fetch/ajax/XMLHttpRequest calls that might be sending data
+                if (/fetch\(|\.ajax\(|new XMLHttpRequest\(/.test(scriptContent)) {
+                    results.suspiciousScripts.push({
+                        position: scriptMatch.index,
+                        excerpt: scriptContent.length > 100 ? 
+                            scriptContent.substring(0, 100) + '...' : 
+                            scriptContent,
+                        type: 'network_call'
+                    });
+                }
+            }
+            
+            return results;
+        }
+
+        // Function to display source analysis results
+        function displaySourceAnalysis(analysisData) {
+            const resultDetails = document.getElementById('resultDetails');
+            
+            let sourceAnalysisHtml = '<div class="source-analysis">';
+            sourceAnalysisHtml += '<h3>Source Code Analysis</h3>';
+            
+            if (analysisData.has_ip_tracking) {
+                sourceAnalysisHtml += '<div class="warning-item">⚠️ IP tracking code detected!</div>';
+                
+                // Display IP-related elements found
+                sourceAnalysisHtml += '<div><strong>IP-related elements found:</strong></div>';
+                sourceAnalysisHtml += '<ul class="ip-elements">';
+                analysisData.ip_related_elements.forEach(element => {
+                    sourceAnalysisHtml += `<li><code>${element.keyword}</code>: <pre>${element.context}</pre></li>`;
+                });
+                sourceAnalysisHtml += '</ul>';
+                
+                // Display suspicious scripts
+                if (analysisData.suspicious_scripts.length > 0) {
+                    sourceAnalysisHtml += '<div><strong>Suspicious scripts:</strong></div>';
+                    sourceAnalysisHtml += '<ul class="suspicious-scripts">';
+                    analysisData.suspicious_scripts.forEach(script => {
+                        sourceAnalysisHtml += `<li>${script.type === 'network_call' ? '🌐' : '📜'} <pre>${script.excerpt}</pre></li>`;
+                    });
+                    sourceAnalysisHtml += '</ul>';
+                }
+            } else {
+                sourceAnalysisHtml += '<div>No obvious IP tracking code detected in the source.</div>';
+            }
+            
+            sourceAnalysisHtml += '</div>';
+            
+            // Append source analysis to the existing result details
+            resultDetails.innerHTML += sourceAnalysisHtml;
+        }
+        
         // Display the analysis results
         function displayResults(data) {
             const statusIcon = document.getElementById('statusIcon');
@@ -479,20 +670,43 @@
                 resultDetails.innerHTML = 'Running security checks and analyzing URL patterns...';
                 
                 try {
-                    // Try to use the backend first
-                    let result = null;
+                    // Original URL security check
+                    let securityResult = null;
                     try {
-                        result = await checkURL(url);
+                        securityResult = await checkURL(url);
                     } catch (error) {
                         console.warn('Backend unavailable, using fallback:', error);
-                        result = await fallbackCheckURL(url);
+                        securityResult = await fallbackCheckURL(url);
+                    }
+                    
+                    // Add source code analysis
+                    let sourceAnalysis = null;
+                    try {
+                        sourceAnalysis = await analyzeURLContent(url);
+                        
+                        // Combine the results
+                        if (sourceAnalysis.status === 'success') {
+                            // Update the risk level if IP tracking is found
+                            if (sourceAnalysis.source_analysis.has_ip_tracking && 
+                                securityResult.result.risk_level !== "High") {
+                                securityResult.result.risk_level = "High";
+                                securityResult.result.issues.push("IP tracking code detected in source");
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Source analysis failed:', error);
                     }
                     
                     // Hide loading indicator
                     loadingIndicator.style.display = 'none';
                     
-                    // Display the results
-                    displayResults(result);
+                    // Display the security results
+                    displayResults(securityResult);
+                    
+                    // If source analysis was successful, display it too
+                    if (sourceAnalysis && sourceAnalysis.status === 'success') {
+                        displaySourceAnalysis(sourceAnalysis.source_analysis);
+                    }
                     
                 } catch (error) {
                     loadingIndicator.style.display = 'none';
